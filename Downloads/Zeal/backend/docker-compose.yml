@@ -1,0 +1,101 @@
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-ds_password}
+      MYSQL_DATABASE: digital_seal
+      MYSQL_USER: ${DB_USERNAME:-ds_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-ds_password}
+    ports:
+      - "${MYSQL_HOST_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/init/01-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h localhost -uroot -p${DB_PASSWORD:-ds_password} --silent",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 30s
+
+  hardhat:
+    build:
+      context: ../blockchain
+      dockerfile: Dockerfile.hardhat
+    image: digital-seal-hardhat:local
+    restart: unless-stopped
+    environment:
+      HARDHAT_CHAIN_ID: ${POLYGON_LIKE_CHAIN_ID:-80002}
+      HARDHAT_INITIAL_BASE_FEE_WEI: ${POLYGON_LIKE_INITIAL_BASE_FEE_WEI:-30000000000}
+      HARDHAT_MINING_INTERVAL_MS: ${POLYGON_LIKE_MINING_INTERVAL_MS:-2000}
+      HARDHAT_BLOCK_GAS_LIMIT: ${POLYGON_LIKE_BLOCK_GAS_LIMIT:-30000000}
+    ports:
+      - "${HARDHAT_HOST_PORT:-8545}:8545"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"const http=require('http');const payload=JSON.stringify({jsonrpc:'2.0',method:'eth_chainId',params:[],id:1});const req=http.request({hostname:'localhost',port:8545,method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload)}},res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));req.write(payload);req.end();\"",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  contract-deployer:
+    image: digital-seal-hardhat:local
+    profiles: ["manual"]
+    restart: "no"
+    depends_on:
+      hardhat:
+        condition: service_healthy
+    environment:
+      HARDHAT_RPC_URL: http://hardhat:8545
+      HARDHAT_CHAIN_ID: ${POLYGON_LIKE_CHAIN_ID:-80002}
+      HARDHAT_INITIAL_BASE_FEE_WEI: ${POLYGON_LIKE_INITIAL_BASE_FEE_WEI:-30000000000}
+      HARDHAT_MINING_INTERVAL_MS: ${POLYGON_LIKE_MINING_INTERVAL_MS:-2000}
+      HARDHAT_BLOCK_GAS_LIMIT: ${POLYGON_LIKE_BLOCK_GAS_LIMIT:-30000000}
+      CONTRACT_ENV_PATH: /shared/contract.env
+    command: ["npx", "hardhat", "run", "scripts/deploy.js", "--network", "localhost"]
+    volumes:
+      - contract_data:/shared
+
+  backend:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_HOST_PORT:-8080}:8080"
+    environment:
+      DB_USERNAME: ${DB_USERNAME:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-ds_password}
+      MAIL_HOST: ${MAIL_HOST:-smtp.gmail.com}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      JWT_SECRET: ${JWT_SECRET}
+      WEB3_RPC_URL: ${POLYGON_LIKE_RPC_URL:-http://hardhat:8545}
+      WEB3_CHAIN_ID: ${POLYGON_LIKE_CHAIN_ID:-80002}
+      CONTRACT_ADDRESS: ${CONTRACT_ADDRESS:-}
+      PRIVATE_KEY: ${PRIVATE_KEY:-}
+      WEB3_BRAND_PRIVATE_KEYS: ${WEB3_BRAND_PRIVATE_KEYS:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:8081}
+      CONTRACT_ENV_FILE: /shared/contract.env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      hardhat:
+        condition: service_healthy
+    volumes:
+      - contract_data:/shared:ro
+
+volumes:
+  mysql_data:
+    driver: local
+  contract_data:
+    driver: local
